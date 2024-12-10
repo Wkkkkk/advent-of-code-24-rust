@@ -106,12 +106,14 @@ struct RunnableState {
 struct LoopingState {}
 
 struct OutOfMazeState {
+    grid: Grid<char>,
     count: usize,
 }
 
 impl OutOfMazeState {
     fn new(grid: &Grid<char>) -> OutOfMazeState {
         OutOfMazeState {
+            grid: grid.clone(),
             count: grid.iter().filter(|&&c| c == 'X').count(),
         }
     }
@@ -136,6 +138,7 @@ impl ValidStates {
             ValidStates::Runnable(runnable) => runnable.next(),
             ValidStates::Looping(_) => ValidStates::Looping(LoopingState {}),
             ValidStates::OutOfMaze(out_of_maze) => ValidStates::OutOfMaze(OutOfMazeState {
+                grid: out_of_maze.grid.clone(),
                 count: out_of_maze.count,
             }),
         }
@@ -188,7 +191,7 @@ impl RunnableState {
         let is_out_of_maze = next.is_none();
 
         // Make a mark on the grid
-        let mut grid = self.grid.clone();
+        let mut grid = self.grid.clone(); // @todo: this is not efficient
         grid[self.now] = 'X';
         if is_out_of_maze {
             return ValidStates::OutOfMaze(OutOfMazeState::new(&grid));
@@ -254,10 +257,23 @@ pub fn part_one(input: &str) -> Option<u32> {
 }
 
 fn fill_grid_with_obstacles(grid: &Grid<char>) -> Vec<Grid<char>> {
+    let init_state = InitState::new(grid.clone());
+    let mut current_state = ValidStates::Init(init_state);
+
+    while let ValidStates::Runnable(next_state) = current_state.next() {
+        current_state = ValidStates::Runnable(next_state);
+    }
+
+    let stopped_state = current_state.next();
+    let trace = match stopped_state {
+        ValidStates::OutOfMaze(out_of_maze) => out_of_maze.grid,
+        _ => Grid::new(0, 0),
+    };
+
     // try to replace '.' with '#'
     let mut grids = Vec::new();
-    for ((row, col), i) in grid.indexed_iter() {
-        if *i == '.' {
+    for ((row, col), i) in trace.indexed_iter() {
+        if *i == 'X' && grid.get(row, col) == Some(&'.') {
             let mut new_grid = grid.clone();
             if let Some(cell) = new_grid.get_mut(row, col) {
                 *cell = '#';

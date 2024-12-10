@@ -36,8 +36,8 @@ fn find_path(
 
     let mut stack = vec![(start, vec![start])];
     while let Some(((col, row), mut trace)) = stack.pop() {
-        let current_height = grid[(row, col)];
-        if current_height == 9 {
+        let current_height = grid.get(row, col).unwrap();
+        if *current_height == 9 {
             reachable_ends.insert(((col, row), trace));
             continue;
         }
@@ -57,8 +57,8 @@ fn find_path(
         }
 
         for (col, row) in next {
-            let next_height = grid[(row, col)];
-            if next_height == current_height + 1 {
+            let next_height = grid.get(row, col).unwrap();
+            if *next_height == current_height + 1 {
                 trace.push((col, row));
                 stack.push(((col, row), trace.clone()));
             }
