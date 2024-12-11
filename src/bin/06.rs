@@ -1,14 +1,15 @@
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-};
-
-use grid::*;
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 advent_of_code::solution!(6);
 
-fn parse_to_grid(input: &str) -> Grid<char> {
+// Define type aliases
+type Grid = grid::Grid<char>;
+type GridPtr = Box<Grid>;
+type History = HashMap<Direction, HashSet<(usize, usize)>>;
+type HistoryPtr = Box<History>;
+
+fn parse_to_grid(input: &str) -> Grid {
     let width = input.lines().next().unwrap().len();
     let cells = input
         .lines()
@@ -19,7 +20,8 @@ fn parse_to_grid(input: &str) -> Grid<char> {
     Grid::from_vec(cells, width)
 }
 
-fn print_grid(grid: &Grid<char>) {
+#[allow(dead_code)]
+fn print_grid(grid: &Grid) {
     for ((_row, col), i) in grid.indexed_iter() {
         print!("{i}");
         if col == grid.size().0 - 1 {
@@ -28,7 +30,7 @@ fn print_grid(grid: &Grid<char>) {
     }
 }
 
-fn start_from(grid: &Grid<char>) -> (usize, usize) {
+fn start_from(grid: &Grid) -> (usize, usize) {
     for ((row, col), i) in grid.indexed_iter() {
         if *i == '^' {
             return (row, col);
@@ -76,15 +78,15 @@ impl Direction {
     }
 }
 
-#[derive(Clone, Debug)]
 struct InitState {
     now: (usize, usize),
     direction: Direction,
-    grid: Grid<char>,
+    grid: GridPtr,
+    history: HistoryPtr,
 }
 
 impl InitState {
-    fn new(grid: Grid<char>) -> InitState {
+    fn new(grid: GridPtr, history: HistoryPtr) -> InitState {
         let now = start_from(&grid);
         let direction = Direction::from_char(grid[now]).unwrap();
 
@@ -92,6 +94,7 @@ impl InitState {
             now,
             direction,
             grid,
+            history,
         }
     }
 }
@@ -99,22 +102,22 @@ impl InitState {
 struct RunnableState {
     now: (usize, usize),
     direction: Direction,
-    grid: Grid<char>,
-    history: HashMap<Direction, HashSet<(usize, usize)>>,
+    grid: GridPtr,
+    history: HistoryPtr,
 }
 
 struct LoopingState {}
 
 struct OutOfMazeState {
-    grid: Grid<char>,
+    grid: GridPtr,
     count: usize,
 }
 
 impl OutOfMazeState {
-    fn new(grid: &Grid<char>) -> OutOfMazeState {
+    fn new(grid: GridPtr) -> OutOfMazeState {
         OutOfMazeState {
-            grid: grid.clone(),
             count: grid.iter().filter(|&&c| c == 'X').count(),
+            grid: grid,
         }
     }
 }
@@ -127,23 +130,25 @@ enum ValidStates {
 }
 
 impl ValidStates {
-    fn next(&self) -> ValidStates {
+    // Consume the current state and return the next state
+    fn next(self) -> ValidStates {
         match self {
             ValidStates::Init(init) => ValidStates::Runnable(RunnableState {
                 now: init.now,
                 direction: init.direction,
-                grid: init.grid.clone(),
-                history: HashMap::new(),
+                grid: init.grid,
+                history: init.history,
             }),
             ValidStates::Runnable(runnable) => runnable.next(),
             ValidStates::Looping(_) => ValidStates::Looping(LoopingState {}),
             ValidStates::OutOfMaze(out_of_maze) => ValidStates::OutOfMaze(OutOfMazeState {
-                grid: out_of_maze.grid.clone(),
+                grid: out_of_maze.grid,
                 count: out_of_maze.count,
             }),
         }
     }
 
+    #[allow(dead_code)]
     fn print(&self) {
         match self {
             ValidStates::Init(init) => {
@@ -186,15 +191,16 @@ impl RunnableState {
         }
     }
 
-    fn next(&self) -> ValidStates {
+    // Consume the current state and return the next state
+    // Mark as mutable to allow changing the grid and history
+    fn next(mut self) -> ValidStates {
         let next = self.step();
         let is_out_of_maze = next.is_none();
 
         // Make a mark on the grid
-        let mut grid = self.grid.clone(); // @todo: this is not efficient
-        grid[self.now] = 'X';
+        self.grid[self.now] = 'X';
         if is_out_of_maze {
-            return ValidStates::OutOfMaze(OutOfMazeState::new(&grid));
+            return ValidStates::OutOfMaze(OutOfMazeState::new(self.grid));
         }
 
         // Still in the maze
@@ -215,40 +221,44 @@ impl RunnableState {
             return ValidStates::Runnable(RunnableState {
                 now: self.now,
                 direction: self.direction.turn_right(),
-                grid: grid,
-                history: self.history.clone(),
+                grid: self.grid,
+                history: self.history,
             });
         }
 
         // No obstacle in front, so move forward
         assert!(!is_facing_obstacle);
-        grid[next] = self.direction.to_char();
-        let mut history = self.history.clone();
-        let steps = history.entry(self.direction).or_insert(HashSet::new());
+        self.grid[next] = self.direction.to_char();
+        let steps = self.history.entry(self.direction).or_insert(HashSet::new());
         steps.insert(self.now);
 
         ValidStates::Runnable(RunnableState {
             now: next,
             direction: self.direction,
-            grid: grid,
-            history: history,
+            grid: self.grid,
+            history: self.history,
         })
     }
 }
 
 pub fn part_one(input: &str) -> Option<u32> {
     let grid = parse_to_grid(input);
-    let init_state = InitState::new(grid.clone());
+    let init_grid = Box::new(grid);
+    let history = Box::new(HashMap::new());
+
+    let init_state = InitState::new(init_grid, history);
     let mut current_state = ValidStates::Init(init_state);
 
-    while let ValidStates::Runnable(next_state) = current_state.next() {
-        current_state = ValidStates::Runnable(next_state);
+    loop {
+        current_state = current_state.next();
+        match current_state {
+            ValidStates::Looping(_) => break,
+            ValidStates::OutOfMaze(_) => break,
+            _ => {}
+        }
     }
 
-    let stopped_state = current_state.next();
-    stopped_state.print();
-
-    let count = match stopped_state {
+    let count = match current_state {
         ValidStates::OutOfMaze(out_of_maze) => out_of_maze.count as u32,
         _ => 0,
     };
@@ -256,17 +266,23 @@ pub fn part_one(input: &str) -> Option<u32> {
     Some(count as u32)
 }
 
-fn fill_grid_with_obstacles(grid: &Grid<char>) -> Vec<Grid<char>> {
-    let init_state = InitState::new(grid.clone());
+fn fill_grid_with_obstacles(grid: &Grid) -> Vec<Grid> {
+    let init_grid = Box::new(grid.clone());
+    let history = Box::new(HashMap::new());
+    let init_state = InitState::new(init_grid, history);
     let mut current_state = ValidStates::Init(init_state);
 
-    while let ValidStates::Runnable(next_state) = current_state.next() {
-        current_state = ValidStates::Runnable(next_state);
+    loop {
+        current_state = current_state.next();
+        match current_state {
+            ValidStates::Looping(_) => break,
+            ValidStates::OutOfMaze(_) => break,
+            _ => {}
+        }
     }
 
-    let stopped_state = current_state.next();
-    let trace = match stopped_state {
-        ValidStates::OutOfMaze(out_of_maze) => out_of_maze.grid,
+    let trace = match current_state {
+        ValidStates::OutOfMaze(out_of_maze) => *out_of_maze.grid,
         _ => Grid::new(0, 0),
     };
 
@@ -287,8 +303,8 @@ fn fill_grid_with_obstacles(grid: &Grid<char>) -> Vec<Grid<char>> {
 }
 
 pub fn part_two(input: &str) -> Option<u32> {
-    let grid = parse_to_grid(input);
-    let grid_with_obstacles = fill_grid_with_obstacles(&grid);
+    let init_grid = parse_to_grid(input);
+    let grid_with_obstacles = fill_grid_with_obstacles(&init_grid);
     println!(
         "Number of possible obstacles: {}",
         grid_with_obstacles.len()
@@ -297,24 +313,24 @@ pub fn part_two(input: &str) -> Option<u32> {
     let count = grid_with_obstacles
         .into_par_iter()
         .map(|grid_with_obs| {
-            let init_state = InitState::new(grid_with_obs.clone());
+            let grid = Box::new(grid_with_obs);
+            let history: HistoryPtr = Box::new(HashMap::new());
+            let init_state = InitState::new(grid, history);
             let mut current_state = ValidStates::Init(init_state);
 
-            while let ValidStates::Runnable(next_state) = current_state.next() {
-                current_state = ValidStates::Runnable(next_state);
+            loop {
+                current_state = current_state.next();
+
+                match current_state {
+                    ValidStates::Looping(_) => return 1,
+                    ValidStates::OutOfMaze(_) => return 0,
+                    _ => {}
+                }
             }
-
-            let stopped_state = current_state.next();
-            stopped_state
         })
-        .filter(|state| match state {
-            ValidStates::Looping(_) => true,
-            _ => false,
-        })
-        .count();
-    println!("Valid obstacles: {}", count);
+        .sum::<u32>();
 
-    Some(count as u32)
+    Some(count)
 }
 
 #[cfg(test)]
